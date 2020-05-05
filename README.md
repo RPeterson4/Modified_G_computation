@@ -1,6 +1,6 @@
 # Code to implement the method from the paper entitled "Estimating longitudinal causal effects with participant noncompliance and confounders with unknown densities".
 
-## Requires the R programming language with packages.
+## Requires the R programming language.
 
 ## There are three files:
 ### 1) true_causal_mean.Rmd, an RMD file that calculates the true causal mean by Monte Carlo integration.
