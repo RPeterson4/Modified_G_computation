@@ -1,0 +1,264 @@
+### File of various G-computation estimators
+
+### Set the sample size and number of time points
+```{r}
+n = 1000; time = 5
+```
+
+### Set the number of random samples in the G-computation algorithm
+```{r}
+n10 = 10000
+```
+
+### Set the true parameters for the zero inflated poisson model
+### First line is the bernoulli component, second is the poisson component
+```{r}
+z_i = -12; z_c = -4; z_z1 = 0.4; z_y1 = -0.4; z_x = 0.8
+z_ip = -5.5; z_cp = -1; z_z1p = 0.01; z_y1p = 0.2; z_xp = 0.01
+```
+
+### Set the true parameters for the study outcome model
+### s_y = 0.88 corresponds to an R^2 of 0.7
+```{r}
+y_i = 14; y_c = -2; y_z1 = -0.02; y_y1 = 0.1; y_x = 0.05; y_z = 2*y_z1; s_y = 0.88
+c_iv = c(-1.35,-0.55,-0.4,-0.05,0) - 0.42; c_c = 0.1; c_z = 0.01; c_y = -0.05; c_x = 0.015
+```
+
+### Set the true parameters for the biomarker model
+```{r}
+alpha = 4; alpha_c = -1.8; alpha_z = 0.04; alpha_y = -0.08;
+alpha_z1 = alpha_z/2; alpha_y1 = alpha_y/2; alpha_x = -0.05; sigma_b = 1
+```
+
+### Weighted log likelihood functions for compliance and the biomarker
+```{r}
+pnlog_lik = function(z,w,zc){
+	return(-sum(w*log(as.vector(t(matrix(c(1-expit(zc%*%z),expit(zc%*%z)),ncol=2))))))
+}
+bnlog_lik = function(z,bset,w,zmatb){
+	return(-sum(w*dnorm(bset,mean=zmatb%*%z[1:(length(z)-1)],sd=exp(z[length(z)]),log=TRUE)))
+}
+```
+
+### The expit function required to generate logit link bernoulli data
+```{r}
+expit = function(x){1/(1+exp(-x))}
+```
+
+### Predictive mean matching function
+### Defaulted to randomly sampling from one of the top five candidates according to difference in predicted values
+```{r}
+findit = function(predp,obsp){
+	sample(sort((abs(obsp - predp)),index.return=TRUE)$ix[1:5],1)
+}
+```
+
+### Various confounder log likelihood functions for the different G-computation algorithms implemented
+```{r}
+# Set the starting values for the zero-inflated poisson confounder at the least wrong estimates
+ze = c(-6.34-1.13,0.34,-0.65,0.69,log(10.93))
+# Set the starting values for the study outcome at the truth
+ye = c(y_i+y_c,y_z1,y_y1,y_x,y_z,log(s_y))
+lz = length(ze)
+li = length(ye)
+cflog_lik1 = function(z,w,tcm){
+	return(-sum(w*dnorm(tcm[,3],mean=tcm[,c(1,5,6,nc)]%*%z[1:(lz-1)],sd=exp(z[lz]),log=TRUE)))
+}
+cflog_lik2 = function(z,w,tcm){
+	return(-sum(w*dnorm(tcm[,4],mean=cbind(tcm[,c(1,5,6,nc)],tcm[,3])%*%z[1:(li-1)],
+		sd=exp(z[li]),log=TRUE)))
+}
+cflog_lik3 = function(z,zf,tcm){
+	return(-sum(dnorm(tcm[zf,3],mean=tcm[zf,c(1,5,6,nc)]%*%
+		z[1:(lz-1)],sd=exp(z[lz]),log=TRUE)))
+}
+cflog_lik4 = function(z,zf,tcm){
+	return(-sum(dnorm(tcm[zf,4],mean=cbind(tcm[zf,c(1,5,6,nc)],tcm[zf,3])%*%
+		z[1:(li-1)],sd=exp(z[li]),log=TRUE)))
+}
+cflog_lik5 = function(z,tcm){
+	return(-sum(dnorm(tcm[,3],mean=tcm[,c(1,5,6,nc)]%*%
+		z[1:(lz-1)],sd=exp(z[lz]),log=TRUE)))
+}
+cflog_lik6 = function(z,tcm){
+	return(-sum(dnorm(tcm[,4],mean=cbind(tcm[,c(1,5,6,nc)],tcm[,3])%*%
+		z[1:(li-1)],sd=exp(z[li]),log=TRUE)))
+}
+```
+
+### Data generation
+```{r}
+set.seed(292015)
+x = rnorm(n,mean=50,sd=1)
+z0 = ifelse(rbinom(n,1,expit(cbind(1,x)%*%c(z_ip,z_xp)))>0,0,
+	rpois(n,lambda=cbind(1,x)%*%c(z_i,z_x)))
+cs = rbinom(n,1,expit(cbind(1,z0,x)%*%c(c_iv[1],c_z,c_x)))
+z1 = ifelse(rbinom(n,1,expit(cbind(1,cs,z0,x)%*%c(z_ip,z_cp,z_z1p,z_xp)))>0,0,
+	rpois(n,lambda=cbind(1,cs,z0,x)%*%c(z_i,z_c,z_z1,z_x)))
+y1 = rnorm(n,mean=cbind(1,cs,z0,x,z1)%*%c(y_i,y_c,y_z1,y_x,y_z),sd=s_y)
+tcm_f = cbind(1,cs,z1,y1,z0,0,0,0,0,0,0,x)
+nc = 12
+for(i in 1:(time-1)){
+	inds = (1+n*(i-1)):(n*i)
+	csn = rbinom(n,1,expit(tcm_f[inds,c(1:4,nc)]%*%c(c_iv[i+1],c_c,c_z,c_y,c_x)))
+	zn = ifelse(rbinom(n,1,expit(cbind(1,csn,tcm_f[inds,c(3:4,nc)])%*%c(z_ip,z_cp,z_z1p,z_y1p,z_xp)))>0,0,
+		rpois(n,lambda=cbind(1,csn,tcm_f[inds,c(3:4,nc)])%*%c(z_i,z_c,z_z1,z_y1,z_x)))
+	yn = rnorm(n,mean=cbind(1,csn,tcm_f[inds,c(3:4,nc)],zn)%*%c(y_i,y_c,y_z1,y_y1,y_x,y_z),sd=s_y)
+	tcm_f = rbind(tcm_f,cbind(1,csn,zn,yn,tcm_f[inds,3:4],
+		ifelse(i==1,1,0),ifelse(i==2,1,0),ifelse(i==3,1,0),ifelse(i==4,1,0),tcm_f[inds,2],x))
+}
+d = rbinom(n,1,2/3)^(1-tcm_f[,2])
+tcm = tcm_f[which(d==1),]
+ntcm = nrow(tcm)
+bs = rnorm(ntcm,mean=tcm[,c(1:6,nc)]%*%c(alpha,alpha_c,alpha_z,
+	alpha_y,alpha_z1,alpha_y1,alpha_x),sd=sigma_b)
+bm = rep(bs,each=2)
+zmatb = cbind(1,C=rep(c(0,1),ntcm),tcm[rep(1:(ntcm),each=2),c(3:6,nc)])
+zc = tcm[,c(1,3:10,nc)]
+colnames(tcm) = c("Int","C","Zij","Yij","Zij1","Yij1","T2","T3","T4","T5","CP","x")
+```
+
+### For the EM algorithm, set the starting values for the biomarker model at the truth
+### As the compliance model is misspecified, set the starting values as the least wrong estimates
+```{r}
+mza = glm(C~Zij+Yij+Zij1+Yij1+T2+T3+T4+T5+x,data=as.data.frame(tcm),family=binomial(link="logit"))
+bva = as.vector(coef(mza))
+av = c(alpha,alpha_c,alpha_z,alpha_y,alpha_z1,alpha_y1,alpha_x,sigma_b)
+```
+
+### The EM algorithm
+```{r,cache=TRUE}
+rel_diff = 10; iter = 0; oinc = 1e6; s = -1
+while(rel_diff > 1e-05){
+	# E-step: Calculate the marginal compliance probabilities and biomarker densitites
+	probs = as.vector(t(matrix(c(1-expit(zc%*%bva),expit(zc%*%bva)),ncol=2)))
+	fs = dnorm(bm,mean=zmatb%*%av[1:(length(av)-1)],sd=av[length(av)])
+
+	# E-step: Calculate the weights
+	m = matrix(probs*fs,nrow=2)
+	wvec = as.vector(t(t(m)/colSums(m)))
+
+	# M-step: Fit the compliance and biomarker models
+	e1 = optim(par=bva,fn=pnlog_lik,w=wvec,zc=zc,method="BFGS")$par
+	e2 = optim(par=c(av[1:(length(av)-1)],log(av[length(av)])),fn=bnlog_lik,
+		bset=bm,w=wvec,zmatb=zmatb,method="BFGS")$par		
+
+	# Calculate the relative difference convergence criterion
+	rel_diff = sum(abs((c(e1,e2[1:(length(e2)-1)],exp(e2[length(e2)]))-c(bva,av))/c(bva,av)))
+
+	# Update the number of iterations and parameter estimates
+	iter = iter + 1
+	bva = e1
+	av = c(e2[1:(length(e2)-1)],exp(e2[length(e2)]))
+	
+	# Calculate the negative incomplete log likelihood, should decrease with each iteration
+	probsn = as.vector(t(matrix(c(1-expit(zc%*%bva),expit(zc%*%bva)),ncol=2)))
+	fsn = dnorm(bm,mean=zmatb%*%av[1:(length(av)-1)],sd=av[length(av)])
+	ninc = -sum(log(colSums(matrix(probsn*fsn,nrow=2))))
+
+	# Compare the new and previous negative incomplete log likelihood
+	s = max(s,sign(ninc-oinc))
+
+	# Update the negative incomplete log likelihood
+	oinc = ninc
+}
+```
+
+### Check that negative incomplete log likelihood decreased with each iteration
+```{r}
+print(s)
+```
+
+### Calculate the weights required for the fit of the weighted log likelihoods of the confounders
+```{r}
+probs = as.vector(t(matrix(c(1-expit(zc%*%bva),expit(zc%*%bva)),ncol=2)))
+fs = dnorm(bm,mean=zmatb%*%av[1:(length(av)-1)],sd=av[length(av)])
+m = matrix(probs*fs,nrow=2)
+wvec_c = as.vector(t(t(m)/colSums(m)))[seq(2,ntcm*2,2)]
+```
+
+### Parameter estimation for confounders with probability weights of compliance
+```{r}
+ests1 = optim(par=ze,fn=cflog_lik1,w=wvec_c,tcm=tcm,method="BFGS")$par
+ests2 = optim(par=ye,fn=cflog_lik2,w=wvec_c,tcm=tcm,method="BFGS")$par
+estsa = c(ests1[1:(lz-1)],exp(ests1[lz]),ests2[1:(li-1)],exp(ests2[li]))
+```
+
+### Parameter estimation for confounders with compliance known
+```{r}
+zf = which(tcm[,2]==1)
+ests3 = optim(par=ze,fn=cflog_lik3,zf=zf,tcm=tcm,method="BFGS")$par
+ests4 = optim(par=ye,fn=cflog_lik4,zf=zf,tcm=tcm,method="BFGS")$par
+estsa2 = c(ests3[1:(lz-1)],exp(ests3[lz]),ests4[1:(li-1)],exp(ests4[li]))
+```
+
+### Parameter estimation for confounders with self-reported compliance
+```{r}
+ests5 = optim(par=ze,fn=cflog_lik5,tcm=tcm,method="BFGS")$par
+ests6 = optim(par=ye,fn=cflog_lik6,tcm=tcm,method="BFGS")$par
+estsa3 = c(ests5[1:(lz-1)],exp(ests5[lz]),ests6[1:(li-1)],exp(ests6[li]))
+```
+
+### Matrices needed for comparison of predicted and observed values in predictive mean matching
+```{r}
+ozp = cbind(obs = tcm[,3], pred = as.vector(tcm[,c(1,5,6,nc)]%*%ests1[1:(lz-1)]))
+pzp = cbind(obs = tcm[zf,3], pred = as.vector(tcm[zf,c(1,5,6,nc)]%*%ests3[1:(lz-1)]))
+szp = cbind(obs = tcm[,3], pred = as.vector(tcm[,c(1,5,6,nc)]%*%ests5[1:(lz-1)]))
+```
+
+### Randomly sample with parameter estimates from probability weights of compliance
+```{r,cache=TRUE}
+emp_s = tcm[sample(1:(which(tcm[,7]==1)[1]-1),n10,replace=TRUE),c(1,5,6,nc)]
+for(i in 1:time){
+	inds = (1+n10*(i-1)):(n10*i)
+	zn = ozp[sapply(emp_s[inds,]%*%estsa[1:(lz-1)],findit,ozp[,2]),1]	
+	yn = rnorm(n10,cbind(emp_s[inds,],zn)%*%estsa[(lz+1):(lz+li-1)],sd=estsa[lz+li])
+	emp_s = rbind(emp_s,cbind(1,zn,yn,emp_s[inds,ncol(emp_s)]))
+}
+m1 = mean(emp_s[(n10*time+1):nrow(emp_s),3])
+```
+
+### Randomly sample with parameter estimates from true compliance
+```{r,cache=TRUE}
+emp_s2 = emp_s[1:n10,]
+for(i in 1:time){
+	inds = (1+n10*(i-1)):(n10*i)
+	zn = pzp[sapply(emp_s2[inds,]%*%estsa2[1:(lz-1)],findit,pzp[,2]),1]
+	yn = rnorm(n10,cbind(emp_s2[inds,],zn)%*%estsa2[(lz+1):(lz+li-1)],sd=estsa2[lz+li])
+	emp_s2 = rbind(emp_s2,cbind(1,zn,yn,emp_s2[inds,ncol(emp_s2)]))
+}
+m2 = mean(emp_s2[(n10*time+1):nrow(emp_s2),3])
+```
+
+### Randomly sample with parameter estimates from self-reported compliance
+```{r,cache=TRUE}
+emp_s3 = emp_s[1:n10,]
+for(i in 1:time){
+	inds = (1+n10*(i-1)):(n10*i)
+	zn = szp[sapply(emp_s3[inds,]%*%estsa3[1:(lz-1)],findit,szp[,2]),1]
+	yn = rnorm(n10,cbind(emp_s3[inds,],zn)%*%estsa3[(lz+1):(lz+li-1)],sd=estsa3[lz+li])
+	emp_s3 = rbind(emp_s3,cbind(1,zn,yn,emp_s3[inds,ncol(emp_s3)]))
+}
+m3 = mean(emp_s3[(n10*time+1):nrow(emp_s3),3])
+```
+
+### Randomly sample without predictive mean matching
+```{r,cache=TRUE}
+emp_s4 = emp_s[1:n10,]
+for(i in 1:time){
+	inds = (1+n10*(i-1)):(n10*i)
+	zn = rnorm(n10,emp_s4[inds,]%*%estsa[1:(lz-1)],sd=estsa[lz])
+	yn = rnorm(n10,cbind(emp_s4[inds,],zn)%*%estsa[(lz+1):(lz+li-1)],sd=estsa[lz+li])
+	emp_s4 = rbind(emp_s4,cbind(1,zn,yn,emp_s4[inds,ncol(emp_s4)]))
+}
+m4 = mean(emp_s4[(n10*time+1):nrow(emp_s4),3])
+```
+
+### Compare estimated causal mean with true causal mean
+```{r}
+res = cbind(c(14.21957,mpp = mean(tcm[which(tcm[,10]==1),4]),m4,m3,m2,m1))
+rownames(res) = c("Truth","Per Protocol Estimate","G-comp No PMM Estimate","G-comp Self-Report Estimate",
+	"G-comp with True Compliance Estimate","Full G-comp Estimate")
+colnames(res) = "Causal Mean"
+print(res)
+```

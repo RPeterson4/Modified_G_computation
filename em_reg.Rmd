@@ -1,0 +1,145 @@
+# File of implementation of EM-Reg from Boatman et al. (2018)
+
+### Set the sample size and number of time points
+```{r}
+n = 1000; time = 5
+```
+
+### Set the true parameters for the zero-inflated poisson model
+### First line is the bernoulli component, second is the poisson component
+```{r}
+z_i = -12; z_c = -4; z_z1 = 0.4; z_y1 = -0.4; z_x = 0.8
+z_ip = -5.5; z_cp = -1; z_z1p = 0.01; z_y1p = 0.2; z_xp = 0.01
+```
+
+### Set the true parameters for the study outcome model and
+### s_y = 0.88 corresponds to an R^2 of 0.7
+```{r}
+y_i = 14; y_c = -2; y_z1 = -0.02; y_y1 = 0.1; y_x = 0.05; y_z = 2*y_z1; s_y = 0.88
+c_iv = c(-1.35,-0.55,-0.4,-0.05,0) - 0.42; c_c = 0.1; c_z = 0.01; c_y = -0.05; c_x = 0.015
+```
+
+### Set the true parameters for the biomarker model
+```{r}
+alpha = 4; alpha_c = -1.8; alpha_z = 0.04; alpha_y = -0.08;
+alpha_z1 = alpha_z/2; alpha_y1 = alpha_y/2; alpha_x = -0.05; sigma_b = 1
+```
+
+### Weighted log likelihood functions for compliance, the biomarker, and the study outcome, in order
+```{r}
+pnlog_lik = function(z,w,zc){
+	return(-sum(w*log(as.vector(t(matrix(c(1-expit(zc%*%z),expit(zc%*%z)),ncol=2))))))
+}
+bnlog_lik = function(z,bset,w,zmatb){
+	return(-sum(w*dnorm(bset,mean=zmatb%*%z[1:(length(z)-1)],sd=exp(z[length(z)]),log=TRUE)))
+}
+ylog_lik = function(z,yset,w,zmaty){
+	return(-sum(w*dnorm(yset,mean=zmaty%*%z[1:(length(z)-1)],sd=exp(z[length(z)]),log=TRUE)))
+}
+```
+
+### The expit function required to generate logit link bernoulli data
+```{r}
+expit = function(x){1/(1+exp(-x))}
+```
+	
+### Data generation
+```{r}
+set.seed(292015)
+x = rnorm(n,mean=50,sd=1)
+z0 = ifelse(rbinom(n,1,expit(cbind(1,x)%*%c(z_ip,z_xp)))>0,0,
+	rpois(n,lambda=cbind(1,x)%*%c(z_i,z_x)))
+cs = rbinom(n,1,expit(cbind(1,z0,x)%*%c(c_iv[1],c_z,c_x)))
+z1 = ifelse(rbinom(n,1,expit(cbind(1,cs,z0,x)%*%c(z_ip,z_cp,z_z1p,z_xp)))>0,0,
+	rpois(n,lambda=cbind(1,cs,z0,x)%*%c(z_i,z_c,z_z1,z_x)))
+y1 = rnorm(n,mean=cbind(1,cs,z0,x,z1)%*%c(y_i,y_c,y_z1,y_x,y_z),sd=s_y)
+tcm_f = cbind(1,cs,z1,y1,z0,0,0,0,0,0,0,x)
+nc = ncol(tcm_f)
+for(i in 1:(time-1)){
+	inds = (1+n*(i-1)):(n*i)
+	csn = rbinom(n,1,expit(tcm_f[inds,c(1:4,nc)]%*%c(c_iv[i+1],c_c,c_z,c_y,c_x)))
+	zn = ifelse(rbinom(n,1,expit(cbind(1,csn,tcm_f[inds,c(3:4,nc)])%*%c(z_ip,z_cp,z_z1p,z_y1p,z_xp)))>0,0,
+		rpois(n,lambda=cbind(1,csn,tcm_f[inds,c(3:4,nc)])%*%c(z_i,z_c,z_z1,z_y1,z_x)))
+	yn = rnorm(n,mean=cbind(1,csn,tcm_f[inds,c(3:4,nc)],zn)%*%c(y_i,y_c,y_z1,y_y1,y_x,y_z),sd=s_y)
+	tcm_f = rbind(tcm_f,cbind(1,csn,zn,yn,tcm_f[inds,3:4],
+		ifelse(i==1,1,0),ifelse(i==2,1,0),ifelse(i==3,1,0),ifelse(i==4,1,0),tcm_f[inds,2],x))
+}
+d = rbinom(n,1,2/3)^(1-tcm_f[,2])
+tcm = tcm_f[which(d==1),]
+ntcm = nrow(tcm)
+bs = rnorm(ntcm,mean=tcm[,c(1:6,nc)]%*%c(alpha,alpha_c,alpha_z,
+	alpha_y,alpha_z1,alpha_y1,alpha_x),sd=sigma_b)
+bm = rep(bs,each=2)
+zmatb = cbind(1,C=rep(c(0,1),ntcm),tcm[rep(1:(ntcm),each=2),c(3:6,nc)])
+ym = zmatb[,4]
+zmaty = zmatb[,-4]
+zc = tcm[,c(1,3,5:10,nc)]
+colnames(tcm) = c("Int","C","Zij","Yij","Zij1","Yij1","T2","T3","T4","T5","CP","x")
+```
+
+### For the EM algorithm, set the starting values for both biomarker and study outcome models at the truth
+### As the compliance model is misspecified as a different logistic regression model than is fit, set the starting values as the least wrong estimates
+```{r}
+mca = glm(C~Zij+Zij1+Yij1+T2+T3+T4+T5+x,data = as.data.frame(tcm),family=binomial(link="logit"))
+bva = as.vector(coef(mca))
+av = c(alpha,alpha_c,alpha_z,alpha_y,alpha_z1,alpha_y1,alpha_x,sigma_b)
+yv = c(y_i,y_c,y_z,y_z1,y_y1,y_x,s_y)
+```
+
+### The EM algorithm
+```{r,cache=TRUE}
+rel_diff = 10; iter = 0; oinc = 1e6; s = -1
+while(rel_diff > 1e-05){
+	# E-step: Calculate the marginal compliance probabilities, biomarker densitites, and study outcome densities
+	probs = as.vector(t(matrix(c(1-expit(zc%*%bva),expit(zc%*%bva)),ncol=2)))
+	fs = dnorm(bm,mean=zmatb%*%av[1:(length(av)-1)],sd=av[length(av)])
+	fsy = dnorm(ym,mean=zmaty%*%yv[1:(length(yv)-1)],sd=yv[length(yv)])
+
+	# E-step: Calculate the weights
+	m = matrix(probs*fs*fsy,nrow=2)
+	wvec = as.vector(t(t(m)/colSums(m)))
+
+	# M-step: Fit the compliance, biomarker, and study outcome models
+	e1 = optim(par=bva,fn=pnlog_lik,w=wvec,zc=zc,method="BFGS")$par
+	e2 = optim(par=c(av[1:(length(av)-1)],log(av[length(av)])),
+		fn=bnlog_lik,bset=bm,w=wvec,zmatb=zmatb,method="BFGS")$par
+	e3 = optim(par=c(yv[1:(length(yv)-1)],log(yv[length(yv)])),
+		fn=ylog_lik,yset=ym,w=wvec,zmaty=zmaty,method="BFGS")$par
+
+	# Calculate the relative difference convergence criterion
+	rel_diff = sum(abs((c(e1,e2[1:(length(e2)-1)],exp(e2[length(e2)]),e3[1:(length(e3)-1)],exp(e3[length(e3)]))-
+		c(bva,av,yv))/c(bva,av,yv)))
+
+	# Update the number of iterations and parameter estimates
+	iter = iter + 1
+	bva = e1
+	av = c(e2[1:(length(e2)-1)],exp(e2[length(e2)]))
+	yv = c(e3[1:(length(e3)-1)],exp(e3[length(e3)]))
+	
+	# Calculate the negative incomplete log likelihood, should decrease with each iteration
+	probsn = as.vector(t(matrix(c(1-expit(zc%*%bva),expit(zc%*%bva)),ncol=2)))
+	fsn = dnorm(bm,mean=zmatb%*%av[1:(length(av)-1)],sd=av[length(av)])
+	fsyn = dnorm(ym,mean=zmaty%*%yv[1:(length(yv)-1)],sd=yv[length(yv)])
+	ninc = -sum(log(colSums(matrix(probsn*fsn*fsyn,nrow=2))))
+
+	# Compare the new and previous negative incomplete log likelihood
+	s = max(s,sign(ninc-oinc))
+
+	# Update the negative incomplete log likelihood
+	oinc = ninc
+}
+```
+
+### Check that negative incomplete log likelihood decreased with each iteration
+```{r}
+print(s)
+```
+
+### Compare estimated causal mean with true causal mean
+```{r}
+res = cbind(c(14.21957,mean(cbind(1,1,zmaty[(which(tcm[,10]==1)[1]*2-1):nrow(zmaty),3:6])
+	%*%yv[1:(length(yv)-1)])))
+rownames(res) = c("Truth","EM-REG Estimate")
+colnames(res) = "Causal Mean"
+print(res)
+```
