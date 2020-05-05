@@ -1,4 +1,4 @@
-# Code to implement the method from the paper entitled "Estimating longitudinal causal effects with participant noncompliance and confounders with unknown densities".
+# Code to implement the method from the paper entitled "Estimating longitudinal causal effects with unobserved participant noncompliance and confounders with unknown densities".
 
 ## Requires the R programming language.
 
